@@ -1,0 +1,8 @@
+create or replace TRIGGER tra_dont_drop
+BEFORE DROP OR ALTER
+ON SCHEMA
+BEGIN
+   IF ORA_DICT_OBJ_NAME = 'BUY_STOCK' or ORA_DICT_OBJ_NAME = 'SELL_STOCK' or ora_dict_obj_name='STOCK_CODE' THEN
+      RAISE_APPLICATION_ERROR(-20001, 'Cannot drop or alter this table');
+   END IF;
+END;
