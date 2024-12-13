@@ -1,0 +1,12 @@
+create or replace procedure update_buystock as
+begin
+update buy_stock set buy_charge=least(qty*buy_price*0.001,20)+buy_price*qty*(0.001+0.00015+0.00003+.000001+.000001)+case when qty*buy_price>200 then 2 else 0 end+
+(least(qty*buy_price*0.001,20)+buy_price*qty*(0.00003+0.000001))*0.18;
+commit;
+update sell_stock set selling_charge=least(qty*sell_price*0.001,20)+sell_price*qty*(0.00015+0.00003+.000001+.000001)+
+(least(qty*sell_price*0.001,20)+sell_price*qty*(0.00003+0.000001))*0.18+20 where id in (select min(id) from sell_stock group by stock_name,sell_date);
+commit;
+update sell_stock set selling_charge=least(qty*sell_price*0.001,20)+sell_price*qty*(0.00015+0.00003+.000001+.000001)+
+(least(qty*sell_price*0.001,20)+sell_price*qty*(0.00003+0.000001))*0.18 where id not in (select min(id) from sell_stock group by stock_name,sell_date);
+commit;
+end;

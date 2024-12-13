@@ -1,0 +1,241 @@
+create or replace PROCEDURE up_stock AS
+v_time_key number;
+BEGIN
+    -- Drop tables if they already exist to avoid errors
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TABLE drop_stock1';
+    EXCEPTION
+        WHEN OTHERS THEN NULL;  -- Ignore if table does not exist
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TABLE drop_stock2';
+    EXCEPTION
+        WHEN OTHERS THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TABLE drop_stock3';
+    EXCEPTION
+        WHEN OTHERS THEN NULL;
+    END;
+
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP TABLE drop_new_stock';
+    EXCEPTION
+        WHEN OTHERS THEN NULL;
+    END;
+
+    -- Create and populate drop_stock1 table
+    EXECUTE IMMEDIATE '
+    CREATE TABLE drop_stock1 AS
+    WITH E AS (
+        SELECT STOCK_NAME, TOTAL_QTY, buy_avg,sell_avg,total_buy_amount,total_sell_amount, date_of_purchase ,buy_charge,selling_charge,status
+        FROM (
+            SELECT 
+                stock_name,
+                SUM(qty) OVER(PARTITION BY stock_name order by id desc) AS total_qty,
+                0 buy_avg,
+                round((SUM(sell_price * qty) OVER (PARTITION BY stock_name ORDER BY id desc)) / 
+                (SUM(qty) OVER (PARTITION BY stock_name ORDER BY id desc)),2) AS sell_avg,
+
+                RANK() OVER (PARTITION BY stock_name ORDER BY id asc) AS rank,
+                0 total_buy_amount,
+                SUM(sell_price * qty) OVER (PARTITION BY stock_name ORDER BY id desc) total_sell_amount,
+                MAX(sell_date) OVER (PARTITION BY stock_name) AS date_of_purchase,
+                0 as buy_charge,
+                sum(selling_charge) over ( partition by stock_name) as selling_charge,
+                
+                ''SOLD'' AS status
+            FROM sell_stock
+        ) WHERE rank = 1
+    )
+    SELECT * FROM E';
+
+    -- Create and populate drop_stock2 table
+    EXECUTE IMMEDIATE '
+    CREATE TABLE drop_stock2 AS
+    WITH E AS (
+        SELECT stock_name, SUM(qty) AS qty, SUM(qty * sell_price) AS price, MAX(sell_date) AS date_of_purchase, ''SOLD'' AS status 
+        FROM sell_stock 
+        GROUP BY stock_name
+    ), 
+    B AS (
+        SELECT stock_name,
+               SUM(qty) OVER(PARTITION BY stock_name ORDER BY id DESC) AS qty,
+               
+               (SUM(buy_price * qty) OVER (PARTITION BY stock_name ORDER BY id desc)) / 
+               (SUM(qty) OVER (PARTITION BY stock_name ORDER BY id desc)) AS buy_avg,
+               0 sell_avg,
+               RANK() OVER (PARTITION BY stock_name ORDER BY id asc) AS rank,
+               SUM(buy_price * qty) OVER (PARTITION BY stock_name ORDER BY id desc) total_buy_amount,
+               0 total_sell_amount,
+               MAX(buy_date) OVER (PARTITION BY stock_name) AS date_of_purchase,
+               sum(buy_charge) over(partition by stock_name) as buy_charge,
+               0 selling_charge,
+                
+               ''HOLD'' AS status 
+        FROM buy_stock b 
+        WHERE NOT EXISTS (SELECT * FROM E WHERE b.stock_name = E.stock_name)
+    )
+    SELECT STOCK_NAME, QTY, ROUND(buy_avg, 2) AS buy_avg,sell_avg,total_buy_amount,total_sell_amount, date_of_purchase, buy_charge,selling_charge,STATUS 
+    FROM B 
+    WHERE rank = 1';
+
+    -- Create and populate drop_stock3 table
+    -- for hold_new date_of_purchase column= the first date which bought,for hold,and sold -> its the last date it which bought or sold
+    EXECUTE IMMEDIATE '
+    CREATE TABLE drop_stock3 AS
+    WITH E AS (
+        SELECT stock_name, SUM(qty) AS qty, SUM(qty * sell_price) AS price, MAX(sell_date) AS date_of_purchase, ''SOLD'' AS status 
+        FROM sell_stock 
+        GROUP BY stock_name
+    )
+SELECT stock_name,qty,buy_avg,sell_avg,total_buy_amount,total_sell_amount,date_of_purchase,buy_charge,selling_charge,status
+        FROM (
+            SELECT b.stock_name stock_name,
+                   SUM(b.qty) OVER (PARTITION BY b.stock_name ORDER BY id) AS qty,
+                   round((SUM(buy_price * b.qty) OVER (PARTITION BY b.stock_name ORDER BY id)) / 
+                   (SUM(b.qty) OVER (PARTITION BY b.stock_name ORDER BY id)),2) AS buy_avg,
+                   0 sell_avg,
+                   RANK() OVER (PARTITION BY b.stock_name ORDER BY id DESC) AS rank,
+                   SUM(buy_price * b.qty) OVER (PARTITION BY b.stock_name ORDER BY id) total_buy_amount,
+                   0 total_sell_amount,
+                   min(b.buy_date) OVER (PARTITION BY b.stock_name) AS date_of_purchase,
+                   sum(b.buy_charge) over(partition by b.stock_name) as buy_charge,
+                   0 selling_charge,
+                
+                   ''HOLD_NEW'' AS status 
+            FROM buy_stock  B inner join e on e.stock_name=b.stock_name and e.date_of_purchase<b.buy_date) where rank=1';
+    -- Create and populate drop_new_stock table
+    --below insert is to insert stocks which bought before max sell date and didnt sell. means out of 100 stocks bought few of them were sold. 
+    --below avg and total is approx value. wont have correct data as above. but its  in range
+    insert into drop_stock3 
+    with cte as(
+SELECT stock_name,qty,qty2,buy_avg,sell_avg,total_buy_amount,total_sell_amount,date_of_buy_purchase,date_of_purchase,buy_charge,selling_charge,status
+        FROM (
+            SELECT b.stock_name stock_name,
+                   SUM(b.qty) OVER (PARTITION BY b.stock_name ORDER BY id) AS qty,
+                   e.qty qty2,
+                   round((SUM(buy_price * b.qty) OVER (PARTITION BY b.stock_name ORDER BY id)) / 
+                   (SUM(b.qty) OVER (PARTITION BY b.stock_name ORDER BY id)),2) AS buy_avg,
+                   0 sell_avg,
+                   RANK() OVER (PARTITION BY b.stock_name ORDER BY id DESC) AS rank,
+                   SUM(buy_price * b.qty) OVER (PARTITION BY b.stock_name ORDER BY id) total_buy_amount,
+                   0 total_sell_amount,
+                   max(b.buy_date) OVER (PARTITION BY b.stock_name) AS date_of_buy_purchase,
+                   sum(b.buy_charge) over(partition by b.stock_name) as buy_charge,
+                   0 selling_charge,
+                   e.date_of_purchase date_of_purchase,
+                
+                   'HOLD_NEW' AS status 
+            FROM buy_stock  B inner join (SELECT stock_name, SUM(qty) AS qty, SUM(qty * sell_price) AS price, MAX(sell_date) AS date_of_purchase, 'SOLD' AS status 
+        FROM sell_stock 
+        GROUP BY stock_name)e on e.stock_name=b.stock_name and e.date_of_purchase>=b.buy_date) where rank=1 and qty<>qty2)
+          select STOCK_NAME, QTY, BUY_AVG, SELL_AVG, TOTAL_BUY_AMOUNT, TOTAL_SELL_AMOUNT, DATE_OF_BUY_PURCHASE, BUY_CHARGE, SELLING_CHARGE, 'HOLD_NE1' status from (
+          select stock_name,   SUM(new_1) OVER (PARTITION BY stock_name ORDER BY id) AS qty,
+                   round((SUM(buy_price * new_1) OVER (PARTITION BY stock_name ORDER BY id)) / 
+                   (SUM(new_1) OVER (PARTITION BY stock_name ORDER BY id)),2) AS buy_avg,
+                   0 sell_avg,
+                   RANK() OVER (PARTITION BY stock_name ORDER BY id DESC) AS rank,
+                   SUM(buy_price * new_1) OVER (PARTITION BY stock_name ORDER BY id) total_buy_amount,
+                   0 total_sell_amount,
+                   max(buy_date) OVER (PARTITION BY stock_name) AS date_of_buy_purchase,
+                   sum(buy_charge) over(partition by stock_name) as buy_charge,
+                   0 selling_charge,
+                  
+                   'HOLD_NEW' AS status  from (
+           select a.*,case when rnk=1 then (qty_1-qty2) else qty end new_1 from( select a.*,rank() over(partition by stock_name order by id) rnk  
+           from (select b.stock_name,b.id,
+           sum(b.qty) over(partition by b.stock_name order by b.id) qty_1,b.qty,cte.qty2,b.bUY_PRICE,
+b.BUY_CHARGE,
+b.BUY_DATE from buy_stock b left join cte on b.stock_name=cte.stock_name  
+where b.stock_name in (select stock_name from cte)) a where qty_1>=(select qty2 from cte where a.stock_name=cte.stock_name)) a ))  where rank=1;
+    commit;
+    
+    delete from drop_stock3 where stock_name in (select stock_name from(
+select stock_name,count(*) from drop_stock3 group by stock_name having count(*)>1)) and status='HOLD_NEW';
+commit;
+    
+    EXECUTE IMMEDIATE '
+    CREATE TABLE drop_new_stock AS 
+    SELECT * FROM drop_stock1 
+    UNION ALL
+    SELECT * FROM drop_stock2 
+    UNION ALL
+    SELECT * FROM drop_stock3';
+    -- update buy charges for hold_new stocks
+    merge into (select * from drop_new_stock where status='HOLD_NEW')  tgt using(
+    select a.stock_name,sum(b.buy_charge) charges from drop_new_stock a,buy_stock b 
+    where a.stock_name=b.stock_name and b.buy_date>=a.date_of_purchase and a.status='HOLD_NEW'
+    group by a.stock_name) src on(tgt.stock_name=src.stock_name)
+    when matched then
+    update set tgt.buy_charge=src.charges;
+    commit;
+    --update buyingc charges for stocks which sold
+--    merge into (select * from drop_new_stock where status='SOLD')  tgt using(
+--    select a.stock_name,sum(b.BUY_CHARGE) charges from drop_new_stock a,buy_stock b 
+--    where a.stock_name=b.stock_name and b.buy_date<=a.date_of_purchase and a.status='SOLD'
+--    group by a.stock_name) src 
+--    
+    
+    
+     merge into (select * from drop_new_stock where status='SOLD')  tgt using(
+    select * from (
+    select a.stock_name,sum(b.BUY_CHARGE) over(partition by a.stock_name) charges,round((SUM(b.buy_price * b.qty) OVER (PARTITION BY b.stock_name)) / 
+               (SUM(b.qty) OVER (PARTITION BY b.stock_name)),2) AS buy_avg,
+               SUM(buy_price * b.qty) OVER (PARTITION BY b.stock_name) total_buy,
+               row_number() over(PARTITION BY b.stock_name order by buy_avg) rn
+               from drop_new_stock a,buy_stock b 
+    where a.stock_name=b.stock_name and b.buy_date<=a.date_of_purchase and a.status='SOLD'
+    ) where rn=1) src
+    on(tgt.stock_name=src.stock_name)
+    when matched then
+    update set tgt.BUY_CHARGE=src.charges,
+    tgt.buy_avg=src.buy_avg,
+    tgt.total_buy_amount=src.total_buy;
+    
+ 
+    commit;
+    
+    
+    update drop_new_stock set status='HOLD_NEW' where status='HOLD_NE1';
+    commit;
+   merge into (select * from drop_new_stock where status='SOLD')  tgt using(
+   select distinct b.STOCK_NAME stock, b.TOTAL_QTY qty,b.BUY_CHARGE buy_charge, b.BUY_AVG buy_avg, b.sELL_AVG sell_avg, b.TOTAL_QTY*b.BUY_AVG buy_amount 
+   from drop_new_stock a,drop_new_stock b where a.stock_name=b.stock_name and a.status='HOLD_NEW' and b.status='SOLD'
+    ) src 
+    on(tgt.stock_name=src.stock)
+    when matched then
+    update set tgt.BUY_CHARGE=src.buy_charge,
+    tgt.buy_avg=src.buy_avg,
+    tgt.total_buy_amount=src.buy_amount;
+    commit;
+    delete 
+FROM drop_new_stock 
+WHERE rowid  IN (
+    SELECT min(rowid)
+    FROM (
+        SELECT *
+        FROM drop_new_stock a
+        WHERE (stock_name, DATE_OF_PURCHASE) IN (
+            SELECT stock_name, DATE_OF_PURCHASE
+            FROM drop_new_stock
+            WHERE status = 'HOLD_NEW'
+            GROUP BY stock_name, DATE_OF_PURCHASE
+            HAVING COUNT(*) > 1
+        )
+    )
+    GROUP BY stock_name
+    HAVING COUNT(*) > 1
+);
+commit;
+
+merge into (select * from drop_new_stock where status='SOLD') tgt
+using(select sum(selling_charge) sm, stock_name from sell_stock
+group by stock_name) src
+on (tgt.stock_name=src.stock_name)
+when matched then update set tgt.SELLING_CHARGE=src.sm;
+commit;
+    
+END;

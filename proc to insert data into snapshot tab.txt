@@ -1,0 +1,52 @@
+create or replace procedure proc_insert_into_pl(v_time_key number)
+as
+v_count number;
+begin
+select nvl(count(*),0) into v_count from pl_stock where time_key=v_time_key;
+if v_Count>0 then
+delete from pl_stock where time_key=v_time_key;
+end if;
+insert into pl_stock(
+STOCK_NAME,
+TOTAL_QTY,
+DATE_OF_PURCHASE,
+BUY_AVG,
+TOTAL_BUY_AMOUNT,
+BUY_CHARGE,
+SELL_AVG,
+TOTAL_SELL_AMOUNT,
+DATE_OF_SELL,
+SELLING_CHARGE,
+--CURR_VALUE,
+STATUS,
+PROFIT,
+--CAL_PROFIT,
+--PERCENTAGE,
+TIME_KEY)
+select stock_name,
+TOTAL_QTY,
+case when status like 'HOLD%' then DATE_OF_PURCHASE else null end DATE_OF_PURCHASE,
+BUY_AVG,
+TOTAL_BUY_AMOUNT,
+BUY_CHARGE,
+SELL_AVG,  
+TOTAL_SELL_AMOUNT, 
+case when status not like 'HOLD%' then DATE_OF_PURCHASE else null end DATE_OF_SELL,  
+SELLING_CHARGE, 
+STATUS,
+case when TOTAL_SELL_AMOUNT>0 then TOTAL_SELL_AMOUNT-SELLING_CHARGE-BUY_CHARGE-TOTAL_BUY_AMOUNT else 0 end PROFIT,
+v_time_key
+from drop_new_stock;
+commit;
+
+merge into (select * from pl_stock where time_key=v_time_key) tgt
+using(select * from curr_stockval) src
+on( tgt.stock_name=src.stock)
+when matched then update set tgt.CURR_VALUE=src.curr,
+tgt.CAL_CURRVALUE=src.curr*tgt.TOTAL_QTY,
+tgt.CAL_PROFIT=src.curr*tgt.TOTAL_QTY-TOTAL_BUY_AMOUNT,
+tgt.calc_perc=round((src.curr*tgt.TOTAL_QTY-tgt.TOTAL_BUY_AMOUNT)*100/tgt.TOTAL_BUY_AMOUNT,2),--without considering charges
+tgt.percentage=tgt.profit*100/tgt.total_buy_amount--for already sold 
+;
+commit;
+end;
